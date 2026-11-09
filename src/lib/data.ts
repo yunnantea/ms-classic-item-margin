@@ -1,28 +1,48 @@
 import { supabase } from "./supabase";
 import type { Item, Recipe, RecipeIngredient, RecipeWithIngredients } from "@/types";
 
-/** Fetch all data needed for the calculator in 3 flat queries (no joins). */
+/** Paginate a table fetch past the server-side row cap (default 1000). */
+async function fetchPaged<T>(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  fetcher: (from: number, to: number) => PromiseLike<{ data: any[] | null; error: unknown }>
+): Promise<T[]> {
+  const PAGE = 1000;
+  const rows: T[] = [];
+  let start = 0;
+  while (true) {
+    const { data, error } = await fetcher(start, start + PAGE - 1);
+    if (error) throw error;
+    rows.push(...(data ?? []));
+    if (!data || data.length < PAGE) break;
+    start += PAGE;
+  }
+  return rows;
+}
+
+/** Fetch all data needed for the calculator, paginating past the server row cap. */
 export async function fetchAllRecipes(): Promise<RecipeWithIngredients[]> {
-  const [recipesRes, ingredientsRes, itemsRes] = await Promise.all([
-    supabase.from("recipes").select("*").order("discipline").limit(5000).returns<Recipe[]>(),
-    supabase.from("recipe_ingredients").select("*").limit(10000).returns<RecipeIngredient[]>(),
-    supabase.from("items").select("*").limit(5000).returns<Item[]>(),
+  const [recipes, ingredients, items] = await Promise.all([
+    fetchPaged<Recipe>((from, to) =>
+      supabase.from("recipes").select("*").order("discipline").range(from, to)
+    ),
+    fetchPaged<RecipeIngredient>((from, to) =>
+      supabase.from("recipe_ingredients").select("*").order("id").range(from, to)
+    ),
+    fetchPaged<Item>((from, to) =>
+      supabase.from("items").select("*").range(from, to)
+    ),
   ]);
 
-  if (recipesRes.error) throw recipesRes.error;
-  if (ingredientsRes.error) throw ingredientsRes.error;
-  if (itemsRes.error) throw itemsRes.error;
-
-  const itemById = new Map(itemsRes.data.map((i) => [i.id, i]));
+  const itemById = new Map(items.map((i) => [i.id, i]));
 
   const ingByRecipeId = new Map<number, RecipeIngredient[]>();
-  for (const ing of ingredientsRes.data) {
+  for (const ing of ingredients) {
     const list = ingByRecipeId.get(ing.recipe_id) ?? [];
     list.push({ ...ing, item: itemById.get(ing.item_id) });
     ingByRecipeId.set(ing.recipe_id, list);
   }
 
-  return recipesRes.data.map((r) => ({
+  return recipes.map((r) => ({
     ...r,
     output_item: itemById.get(r.output_item_id),
     ingredients: ingByRecipeId.get(r.id) ?? [],
