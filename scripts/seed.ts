@@ -12,6 +12,7 @@ import { createClient } from "@supabase/supabase-js";
 config({ path: ".env.local" });
 
 const API_BASE = "https://osmsdataexplorer.com/data/api/v1";
+const CRAFTING_LEGACY_URL = "https://osmsdataexplorer.com/data/current/crafting.json";
 const IMAGE_BASE = "https://osmsdataexplorer.com/data/current/images/items";
 
 const SUPABASE_URL =
@@ -58,12 +59,42 @@ interface ApiRecipe {
   ingredients: ApiIngredient[];
 }
 
+// Legacy crafting.json structure (has item names embedded)
+interface LegacyIngredient { item_id: number; item_name: string; count: number; }
+interface LegacyRecipe { output_id: number; result_item_name: string; ingredients: LegacyIngredient[]; }
+interface LegacyLevel { recipes: LegacyRecipe[]; }
+interface LegacyOutputType { levels: LegacyLevel[]; }
+interface LegacyDiscipline { discipline: string; output_types: LegacyOutputType[]; }
+interface LegacyCrafting { disciplines: LegacyDiscipline[]; }
+
 async function fetchJson<T>(path: string): Promise<T> {
   const url = `${API_BASE}/${path}`;
   console.log(`Fetching ${url}...`);
   const res = await fetch(url);
   if (!res.ok) throw new Error(`Failed to fetch ${url}: ${res.status}`);
   return res.json();
+}
+
+/** Build a complete item name map from the legacy crafting.json (has names for all recipe items). */
+async function fetchLegacyItemNames(): Promise<Map<number, string>> {
+  console.log(`Fetching ${CRAFTING_LEGACY_URL}...`);
+  const res = await fetch(CRAFTING_LEGACY_URL);
+  if (!res.ok) throw new Error(`Failed to fetch legacy crafting.json: ${res.status}`);
+  const data: LegacyCrafting = await res.json();
+
+  const names = new Map<number, string>();
+  for (const disc of data.disciplines) {
+    for (const ot of disc.output_types) {
+      for (const lv of ot.levels) {
+        for (const r of lv.recipes) {
+          names.set(r.output_id, r.result_item_name);
+          for (const ing of r.ingredients) names.set(ing.item_id, ing.item_name);
+        }
+      }
+    }
+  }
+  console.log(`Got ${names.size} item names from legacy crafting.json`);
+  return names;
 }
 
 function chunk<T>(arr: T[], size: number): T[][] {
@@ -96,9 +127,10 @@ async function seed() {
   }
   console.log("Supabase connection OK");
 
-  const [apiItems, apiRecipes] = await Promise.all([
+  const [apiItems, apiRecipes, legacyNames] = await Promise.all([
     fetchJson<ApiItem[]>("items.json"),
     fetchJson<ApiRecipe[]>("recipes.json"),
+    fetchLegacyItemNames(),
   ]);
 
   console.log(`Fetched ${apiItems.length} items, ${apiRecipes.length} recipes`);
@@ -110,15 +142,16 @@ async function seed() {
     for (const ing of r.ingredients) referencedIds.add(ing.item_id);
   }
 
-  // Build item lookup map
-  const itemMap = new Map(apiItems.map((i) => [i.id, i]));
+  // Name priority: legacy crafting.json (most complete) > items.json > fallback
+  const itemsJsonMap = new Map(apiItems.map((i) => [i.id, i]));
 
   const itemsToInsert = Array.from(referencedIds).map((id) => {
-    const item = itemMap.get(id);
+    const name = legacyNames.get(id) ?? itemsJsonMap.get(id)?.name ?? `Unknown Item #${id}`;
+    const category = itemsJsonMap.get(id)?.category ?? null;
     return {
       id,
-      name: item?.name ?? `Unknown Item #${id}`,
-      category: item?.category ?? null,
+      name,
+      category,
       image_url: `${IMAGE_BASE}/${String(id).padStart(8, "0")}.png`,
     };
   });
