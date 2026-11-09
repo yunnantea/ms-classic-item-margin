@@ -4,9 +4,9 @@ import type { Item, Recipe, RecipeIngredient, RecipeWithIngredients } from "@/ty
 /** Fetch all data needed for the calculator in 3 flat queries (no joins). */
 export async function fetchAllRecipes(): Promise<RecipeWithIngredients[]> {
   const [recipesRes, ingredientsRes, itemsRes] = await Promise.all([
-    supabase.from("recipes").select("*").order("discipline").returns<Recipe[]>(),
-    supabase.from("recipe_ingredients").select("*").returns<RecipeIngredient[]>(),
-    supabase.from("items").select("*").returns<Item[]>(),
+    supabase.from("recipes").select("*").order("discipline").limit(5000).returns<Recipe[]>(),
+    supabase.from("recipe_ingredients").select("*").limit(10000).returns<RecipeIngredient[]>(),
+    supabase.from("items").select("*").limit(5000).returns<Item[]>(),
   ]);
 
   if (recipesRes.error) throw recipesRes.error;
